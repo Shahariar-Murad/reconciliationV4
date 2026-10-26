@@ -558,12 +558,15 @@ def normalize_psp_for_bridger(source: LoadedSource) -> pd.DataFrame:
 def normalize_bridger_for_provider(bridger: LoadedSource, provider: str) -> pd.DataFrame:
     frame = bridger.frame.copy()
     _require(frame, ["pspName", "status", "currency", "processing_date", "amount", "transactionId", "pspOrderId", "merchantOrderId"], BRIDGER)
-    psp_name = {
-        PAYABL: "innatech", TRUST: "trustpayments", UNLIMIT: "cardpay", PAYPAL: "paypal",
-        NUVEI_EU: "safecharge", NUVEI_AU: "safecharge", PAYSAFE: "paysafe", PAYSTRA: "paystra",
+    psp_names = {
+        # Payabl card, Apple Pay, and Google Pay are reported under separate
+        # BridgerPay PSP labels but reconcile to the same Payabl export.
+        PAYABL: {"innatech", "applepayviapayabl", "googlepayviapayabl"},
+        TRUST: {"trustpayments"}, UNLIMIT: {"cardpay"}, PAYPAL: {"paypal"},
+        NUVEI_EU: {"safecharge"}, NUVEI_AU: {"safecharge"}, PAYSAFE: {"paysafe"}, PAYSTRA: {"paystra"},
     }[provider]
     mask = (
-        frame["pspName"].astype(str).str.casefold().eq(psp_name)
+        frame["pspName"].astype(str).str.casefold().isin(psp_names)
         & frame["status"].astype(str).str.casefold().eq("approved")
         & frame["currency"].astype(str).str.upper().eq("USD")
     )
