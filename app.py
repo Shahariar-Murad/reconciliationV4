@@ -92,6 +92,18 @@ def render_provider_summary(result: dict) -> None:
     )
 
 
+def local_currency_gaps(result: dict) -> pd.DataFrame:
+    """Return non-USD reconciliation gaps without mixing currency amounts."""
+    currency = result["currency"].copy()
+    if currency.empty:
+        return currency
+    difference = pd.to_numeric(currency["Difference"], errors="coerce").fillna(0)
+    return currency[
+        ~currency["Currency"].astype(str).str.upper().eq("USD")
+        & difference.abs().gt(0.01)
+    ].copy()
+
+
 def filter_table(frame: pd.DataFrame, key_prefix: str) -> pd.DataFrame:
     if frame.empty:
         return frame
@@ -134,10 +146,24 @@ def render_result(result: dict, key_prefix: str) -> None:
     first[4].metric("Outside Period", f"{overall['Outside Period']:,}")
     first[5].metric("Match Rate", f"{overall['Match Rate']:.1%}")
 
+    has_usd = abs(overall[f"{left_name} USD"]) > 0.01 or abs(overall[f"{right_name} USD"]) > 0.01
+    local_gaps = local_currency_gaps(result)
     second = st.columns(3)
-    second[0].metric(f"{left_name} USD", money(overall[f"{left_name} USD"]))
-    second[1].metric(f"{right_name} USD", money(overall[f"{right_name} USD"]))
-    second[2].metric("Absolute USD Difference", money(overall["Absolute USD Difference"]))
+    if has_usd:
+        second[0].metric(f"{left_name} USD", money(overall[f"{left_name} USD"]))
+        second[1].metric(f"{right_name} USD", money(overall[f"{right_name} USD"]))
+        second[2].metric("Absolute USD Difference", money(overall["Absolute USD Difference"]))
+    else:
+        second[0].metric("USD transactions", "Not available")
+        second[1].metric("Local-currency gaps", f"{len(local_gaps):,}")
+        if local_gaps.empty:
+            second[2].metric("Local-currency difference", "0")
+        else:
+            largest_gap = local_gaps.loc[local_gaps["Difference"].abs().idxmax()]
+            second[2].metric(
+                "Largest local gap",
+                f"{largest_gap['Currency']} {abs(float(largest_gap['Difference'])):,.2f}",
+            )
 
     executive, exception_tab, detail_tab, control_tab = st.tabs(
         ["Executive Summary", f"Exceptions & Boundaries ({len(result['exceptions']):,})", "Reconciliation Detail", "Controls & Sources"]
@@ -170,6 +196,20 @@ def render_result(result: dict, key_prefix: str) -> None:
                     use_container_width=True,
                     hide_index=True,
                     column_config={column: st.column_config.NumberColumn(format="%.2f") for column in amount_columns},
+                )
+
+        if not has_usd:
+            st.subheader("Local-currency gaps")
+            if local_gaps.empty:
+                st.success("No local-currency amount gaps were identified.")
+            else:
+                st.caption("USD is not available in the selected data. Amounts are shown separately by local currency and are not combined.")
+                local_amount_columns = [column for column in local_gaps.columns if "Amount" in str(column) or column == "Difference"]
+                st.dataframe(
+                    local_gaps,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={column: st.column_config.NumberColumn(format="%.2f") for column in local_amount_columns},
                 )
 
         if result["workflow"] == "Orchestrator → Backend API" and "Entity" in result["detail"]:
