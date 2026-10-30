@@ -319,7 +319,6 @@ def normalize_backend_orchestrator(source: LoadedSource) -> pd.DataFrame:
         frame = frame[
             frame["transaction_type"].astype(str).eq("Purchase")
             & frame["transaction_currency"].astype(str).str.upper().eq("USD")
-            & ~frame["payment_method"].astype(str).str.casefold().eq("card")
         ].copy()
         frame["provider"] = ZEN
         frame["key"] = frame["merchant_transaction_id"].map(clean_id)
@@ -442,7 +441,19 @@ def normalize_psp_for_bridger(source: LoadedSource) -> pd.DataFrame:
         frame["key"] = frame["Tx-Id"].map(clean_id)
         frame["secondary_id"] = frame["Order No."].map(clean_id)
         frame["merchant_id"] = frame["Custom 3"].map(clean_id)
-        frame["time_gmt3"] = pd.to_datetime(frame["Date"].astype(str) + " " + frame["Time"].astype(str), format="%d.%m.%Y %H:%M:%S", errors="coerce") + pd.Timedelta(hours=1)
+        # Payabl's Date/Time fields follow Central European local time. Use an
+        # IANA timezone so CET/CEST daylight-saving changes are handled before
+        # converting to the report timezone (GMT+3).
+        local = pd.to_datetime(
+            frame["Date"].astype(str) + " " + frame["Time"].astype(str),
+            format="%d.%m.%Y %H:%M:%S",
+            errors="coerce",
+        )
+        frame["time_gmt3"] = (
+            local.dt.tz_localize("Europe/Berlin", ambiguous="NaT", nonexistent="shift_forward")
+            .dt.tz_convert("Etc/GMT-3")
+            .dt.tz_localize(None)
+        )
         frame["amount"] = parse_number(frame["Amount"])
         frame["email"] = frame.get("EMail", "")
         frame["channel"] = frame.get("Credit Card Brand", "")
@@ -1071,17 +1082,6 @@ def reconcile_orchestrator_to_backend(sources: dict[str, LoadedSource], start: d
             continue
         right = normalize_backend_orchestrator(sources[source_name])
         left = backend[backend["provider"].eq(gateway)].copy()
-        if source_name == ZEN:
-            zen_raw = sources[ZEN].frame
-            card_ids = set(
-                zen_raw.loc[
-                    zen_raw["transaction_type"].astype(str).eq("Purchase")
-                    & zen_raw["transaction_currency"].astype(str).str.upper().eq("USD")
-                    & zen_raw["payment_method"].astype(str).str.casefold().eq("card"),
-                    "merchant_transaction_id",
-                ].map(clean_id)
-            )
-            left = left[~left["key"].isin(card_ids)].copy()
         coverage_start = pd.NaT
         if source_name == TCPAY and "TransactionDateUtc" in sources[TCPAY].frame:
             raw_times = pd.to_datetime(sources[TCPAY].frame["TransactionDateUtc"], utc=True, errors="coerce", format="mixed")
